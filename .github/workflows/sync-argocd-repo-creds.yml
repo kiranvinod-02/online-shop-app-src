@@ -1,0 +1,107 @@
+name: Sync ArgoCD Repo Credentials
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "Full HTTPS URL of the GitOps repo to register in ArgoCD"
+        required: true
+        default: "https://github.com/kiranvinod-02/argocd-gitops-demo.git"
+        type: string
+      argocd_project:
+        description: "ArgoCD AppProject this repo belongs to"
+        required: false
+        default: "online-shop-project"
+        type: string
+
+env:
+  GCP_PROJECT_ID: nisarga-503907
+  GKE_CLUSTER_NAME: argocd-test-cluster
+  GKE_REGION: us-central1
+
+permissions:
+  contents: read
+
+jobs:
+  update-argocd-repo-creds:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Derive repo owner/name from input
+        id: repo
+        run: |
+          RAW_URL=$(echo "${{ github.event.inputs.repo_url }}" | tr -d '[:space:]')
+          CLEAN_URL="${RAW_URL%.git}"
+          CLEAN_URL="${CLEAN_URL%/}"
+
+          OWNER=$(echo "$CLEAN_URL" | awk -F/ '{print $(NF-1)}')
+          REPO=$(echo "$CLEAN_URL" | awk -F/ '{print $NF}')
+
+          SECRET_NAME=$(echo "argocd-repo-${OWNER}-${REPO}" \
+            | tr '[:upper:]' '[:lower:]' \
+            | tr -c 'a-z0-9-' '-' \
+            | sed -E 's/-+/-/g; s/^-+//; s/-+$//')
+
+          echo "owner=$OWNER" >> "$GITHUB_OUTPUT"
+          echo "repo=$REPO" >> "$GITHUB_OUTPUT"
+          echo "clean_url=$CLEAN_URL" >> "$GITHUB_OUTPUT"
+          echo "secret_name=$SECRET_NAME" >> "$GITHUB_OUTPUT"
+
+      - name: Verify PAT works against GitHub
+        run: |
+          curl -sf -H "Authorization: token ${{ secrets.ARGOCD_REPO_READONLY_PAT }}" \
+            "https://api.github.com/repos/${{ steps.repo.outputs.owner }}/${{ steps.repo.outputs.repo }}" > /dev/null \
+            && echo "PAT can access ${{ steps.repo.outputs.owner }}/${{ steps.repo.outputs.repo }}" \
+            || (echo "PAT verification failed" && exit 1)
+
+      - name: Confirm token username
+        run: |
+          ACTUAL_USER=$(curl -sf -H "Authorization: token ${{ secrets.ARGOCD_REPO_READONLY_PAT }}" \
+            https://api.github.com/user | jq -r .login)
+          echo "Token belongs to GitHub user: $ACTUAL_USER"
+          echo "TOKEN_USERNAME=$ACTUAL_USER" >> "$GITHUB_ENV"
+
+      - name: Authenticate to GCP (static service account key)
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY_ARGOCD_SYNC }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.GCP_PROJECT_ID }}
+          install_components: 'gke-gcloud-auth-plugin'
+
+      - name: Generate kubeconfig for GKE
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ env.GKE_CLUSTER_NAME }}
+          location: ${{ env.GKE_REGION }}
+          project_id: ${{ env.GCP_PROJECT_ID }}
+
+      - name: Verify GKE access
+        run: kubectl get nodes
+
+      - name: Register/update repo credentials in ArgoCD
+        run: |
+          kubectl -n argocd delete secret ${{ steps.repo.outputs.secret_name }} --ignore-not-found
+
+          kubectl -n argocd create secret generic ${{ steps.repo.outputs.secret_name }} \
+            --from-literal=type=git \
+            --from-literal=url=${{ steps.repo.outputs.clean_url }} \
+            --from-literal=project=${{ github.event.inputs.argocd_project }} \
+            --from-literal=username="${TOKEN_USERNAME}" \
+            --from-literal=password="${{ secrets.ARGOCD_REPO_READONLY_PAT }}" \
+            --dry-run=client -o yaml \
+            | kubectl label --local -f - argocd.argoproj.io/secret-type=repository -o yaml \
+            | kubectl apply -f -
+
+      - name: Confirm secret applied
+        run: |
+          kubectl -n argocd get secret ${{ steps.repo.outputs.secret_name }} \
+            -o jsonpath='{.metadata.name}{"\n"}'
+
+      - name: Restart ArgoCD repo-server to pick up secret changes
+        run: |
+          kubectl -n argocd rollout restart deployment argocd-repo-server
+          kubectl -n argocd rollout status deployment argocd-repo-server --timeout=120s
