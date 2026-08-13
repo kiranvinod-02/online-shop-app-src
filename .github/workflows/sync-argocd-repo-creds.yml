@@ -16,8 +16,8 @@ on:
 
 env:
   GCP_PROJECT_ID: kiran-505306
-  GKE_CLUSTER_NAME: <your-cluster-name-here>
-  GKE_REGION: <your-cluster-region-here>
+  GKE_CLUSTER_NAME: argocd-test-cluster
+  GKE_REGION: us-central1
 
 permissions:
   contents: read
