@@ -103,6 +103,14 @@ jobs:
           kubectl -n argocd get secret ${{ steps.repo.outputs.secret_name }} \
             -o jsonpath='{.metadata.name}{"\n"}'
 
+      - name: Verify secret still exists after a delay
+        run: |
+          kubectl config current-context
+          sleep 15
+          kubectl -n argocd get secret ${{ steps.repo.outputs.secret_name }}
+          echo "---"
+          kubectl -n argocd get secrets -l argocd.argoproj.io/secret-type=repository
+
       - name: Restart ArgoCD repo-server to pick up secret changes
         run: |
           kubectl -n argocd rollout restart deployment argocd-repo-server
