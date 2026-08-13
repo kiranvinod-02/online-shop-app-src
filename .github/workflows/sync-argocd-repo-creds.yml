@@ -15,12 +15,13 @@ on:
         type: string
 
 env:
-  GCP_PROJECT_ID: nisarga-503907
-  GKE_CLUSTER_NAME: argocd-test-cluster
-  GKE_REGION: us-central1
+  GCP_PROJECT_ID: kiran-505306
+  GKE_CLUSTER_NAME: <your-cluster-name-here>
+  GKE_REGION: <your-cluster-region-here>
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   update-argocd-repo-creds:
@@ -61,10 +62,11 @@ jobs:
           echo "Token belongs to GitHub user: $ACTUAL_USER"
           echo "TOKEN_USERNAME=$ACTUAL_USER" >> "$GITHUB_ENV"
 
-      - name: Authenticate to GCP (static service account key)
+      - name: Authenticate to Google Cloud (WIF, no static key)
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY_ARGOCD_SYNC }}
+          workload_identity_provider: projects/1018789479651/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+          service_account: gha-argocd-sync@kiran-505306.iam.gserviceaccount.com
 
       - name: Set up gcloud CLI
         uses: google-github-actions/setup-gcloud@v2
